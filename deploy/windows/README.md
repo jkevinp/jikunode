@@ -181,7 +181,10 @@ hub, the node id and version, and has:
   the command line overrides it until you press Apply.
 - **Binding code** and **Name** boxes with a **Bind** button, shown while the
   node is not bound yet.
-- **Open status page** and **Open log folder**.
+- **More ▾**, a menu with **Open status page** and **Open log folder**. The
+  same menu opens when you right-click the window.
+- **Minimize to tray** hides the window; JikuNode keeps running in the
+  notification area. The title bar's minimize and close buttons do the same.
 
 Together the two preferences decide what happens when Windows starts: both on
 means the node is connected as soon as you sign in.

@@ -62,6 +62,12 @@ var (
 	procCreateFontIndirectW           = modGdi32.NewProc("CreateFontIndirectW")
 	procSetBkColor                    = modGdi32.NewProc("SetBkColor")
 	procSetTextColor                  = modGdi32.NewProc("SetTextColor")
+	procCreatePopupMenu               = modUser32.NewProc("CreatePopupMenu")
+	procAppendMenuW                   = modUser32.NewProc("AppendMenuW")
+	procTrackPopupMenu                = modUser32.NewProc("TrackPopupMenu")
+	procDestroyMenu                   = modUser32.NewProc("DestroyMenu")
+	procGetWindowRect                 = modUser32.NewProc("GetWindowRect")
+	procGetCursorPos                  = modUser32.NewProc("GetCursorPos")
 	procCreateActCtxW                 = modKernel32.NewProc("CreateActCtxW")
 	procActivateActCtx                = modKernel32.NewProc("ActivateActCtx")
 	procGetModuleHandleW              = modKernel32.NewProc("GetModuleHandleW")
@@ -95,11 +101,19 @@ const (
 	ssNoPrefix    = 0x80
 	ssEndEllipsis = 0x4000
 
-	wmDestroy        = 0x0002
-	wmClose          = 0x0010
-	wmSetFont        = 0x0030
-	wmSetIcon        = 0x0080
-	wmCommand        = 0x0111
+	wmDestroy     = 0x0002
+	wmClose       = 0x0010
+	wmSetFont     = 0x0030
+	wmSetIcon     = 0x0080
+	wmCommand     = 0x0111
+	wmSysCommand  = 0x0112
+	wmContextMenu = 0x007B
+	scMinimize    = 0xF020
+
+	mfString         = 0x0000
+	tpmRightButton   = 0x0002
+	tpmBottomAlign   = 0x0020
+	tpmReturnCmd     = 0x0100
 	wmCtlColorBtn    = 0x0135
 	wmCtlColorStatic = 0x0138
 	wmAppUpdate      = 0x8000 + 1
@@ -155,15 +169,16 @@ const (
 	idAutostart
 	idConnect
 	idSep2
-	idPage
-	idLogs
-	idClose
+	idPage // menu item: Open status page
+	idLogs // menu item: Open log folder
+	idHide
 	idLogLabel
 	idLog
 	idPortLabel
 	idPort
 	idApplyPort
 	idPath
+	idMore
 )
 
 type wndClassEx struct {
@@ -545,9 +560,8 @@ var controls = func() []control {
 		{id: idPort, class: "EDIT", style: edit | esNumber, exStyle: wsExClientEdge, x: 112, y: 269, w: 80, h: 26},
 		{id: idApplyPort, class: "BUTTON", text: "Apply", style: bsPushButton | wsTabStop, x: 200, y: 268, w: 72, h: 28},
 		{id: idSep2, class: "STATIC", style: ssEtchedHorz, x: 20, y: 310, w: 400, h: 2},
-		{id: idPage, class: "BUTTON", text: "Open status page", style: bsPushButton | wsTabStop, x: 20, y: 324, w: 140, h: 30},
-		{id: idLogs, class: "BUTTON", text: "Open log folder", style: bsPushButton | wsTabStop, x: 168, y: 324, w: 130, h: 30},
-		{id: idClose, class: "BUTTON", text: "Close", style: bsPushButton | wsTabStop, x: 340, y: 324, w: 80, h: 30},
+		{id: idMore, class: "BUTTON", text: "More ▾", style: bsPushButton | wsTabStop, x: 20, y: 324, w: 90, h: 30},
+		{id: idHide, class: "BUTTON", text: "Minimize to tray", style: bsPushButton | wsTabStop, x: 280, y: 324, w: 140, h: 30},
 		// The log box fills the right-hand column.
 		{id: idLogLabel, class: "STATIC", text: "Node log", style: ssNoPrefix, x: 450, y: 16, w: 410, h: 20, font: fontBold},
 		{id: idLog, class: "EDIT", style: wsTabStop | wsVScroll | esMultiline | esReadOnly | esAutoVScroll, exStyle: wsExClientEdge,
@@ -644,6 +658,24 @@ func wndProc(hwnd, msg, wParam, lParam uintptr) uintptr {
 				w.command(int(wParam & 0xffff))
 			}
 			return 0
+		case wmContextMenu:
+			// Right-click on the window (not in a text box) opens the menu
+			// at the pointer; Shift+F10 or the menu key gives -1,-1.
+			x, y := int32(int16(lParam&0xffff)), int32(int16(lParam>>16&0xffff))
+			if x == -1 && y == -1 {
+				var pt struct{ x, y int32 }
+				_, _, _ = procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+				x, y = pt.x, pt.y
+			}
+			w.menu(x, y, false)
+			return 0
+		case wmSysCommand:
+			// The title bar's minimize button sends JikuNode to the tray
+			// instead of the taskbar.
+			if wParam&0xfff0 == scMinimize {
+				_, _, _ = procShowWindow.Call(hwnd, swHide)
+				return 0
+			}
 		case wmClose:
 			// Closing the window leaves JikuNode running in the tray.
 			_, _, _ = procShowWindow.Call(hwnd, swHide)
@@ -711,12 +743,41 @@ func (w *window) command(id int) {
 		w.enable(idBind, false)
 		w.setText(idBind, "Binding…")
 		go a.bind(code, name)
+	case idMore:
+		var r winRect
+		_, _, _ = procGetWindowRect.Call(w.ctrls[idMore], uintptr(unsafe.Pointer(&r)))
+		w.menu(r.left, r.top, true)
 	case idPage:
 		go a.openPage()
 	case idLogs:
 		go a.openLogs()
-	case idClose, idCancel:
+	case idHide, idCancel:
 		_, _, _ = procShowWindow.Call(w.hwnd, swHide)
+	}
+}
+
+// menu shows the window's context menu at screen point x,y (above it when
+// above is set, as for the More button at the bottom) and runs the chosen
+// item.
+func (w *window) menu(x, y int32, above bool) {
+	m, _, _ := procCreatePopupMenu.Call()
+	if m == 0 {
+		return
+	}
+	defer procDestroyMenu.Call(m)
+	for _, it := range []struct {
+		id   int
+		text string
+	}{{idPage, "Open status page"}, {idLogs, "Open log folder"}} {
+		_, _, _ = procAppendMenuW.Call(m, mfString, uintptr(it.id), uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(it.text))))
+	}
+	flags := uintptr(tpmReturnCmd | tpmRightButton)
+	if above {
+		flags |= tpmBottomAlign
+	}
+	id, _, _ := procTrackPopupMenu.Call(m, flags, uintptr(x), uintptr(y), 0, w.hwnd, 0)
+	if id != 0 {
+		w.command(int(id))
 	}
 }
 
