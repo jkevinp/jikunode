@@ -62,6 +62,11 @@ func removeUserService() (bool, error) {
 	if dir, err := winapp.InstallDir(); err == nil {
 		_ = winapp.RemoveFromUserPath(dir)
 	}
+	if _, portable := winapp.PortableDataDir(); portable {
+		if exe, err := os.Executable(); err == nil {
+			_ = winapp.RemoveFromUserPath(filepath.Dir(exe))
+		}
+	}
 	if programs, err := winapp.StartMenuDir(); err == nil {
 		_, _ = removeIfExists(filepath.Join(programs, "JikuNode.lnk"))
 	}

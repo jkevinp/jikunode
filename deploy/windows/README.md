@@ -170,6 +170,11 @@ hub, the node id and version, and has:
   `%LOCALAPPDATA%\jikunode\tray.json`.
 - A **Node log** box with the end of the node's log, and the reason in red when
   the node cannot start (for example, another program already uses its port).
+- **Add jikunode to PATH (use it in a terminal)**: adds the folder holding
+  the programs to your per-user PATH, so `jikunode status`, `jikunode logs`
+  and the other commands work in terminals opened afterwards; untick it to
+  remove the folder again. The installer turns it on; for a portable copy it
+  starts off, and it adds that copy's own folder.
 - **Status port**: the loopback port of the node's status page (16888 by
   default). If another program already uses it, type another port and press
   **Apply**; JikuNode restarts the node on it and remembers it. `--port` on

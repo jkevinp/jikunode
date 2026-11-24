@@ -163,6 +163,7 @@ const (
 	idPortLabel
 	idPort
 	idApplyPort
+	idPath
 )
 
 type wndClassEx struct {
@@ -282,6 +283,7 @@ type windowActions struct {
 	setConnect   func(bool)
 	bind         func(code, name string)
 	setPort      func(int)
+	setPath      func(bool)
 }
 
 // windowState is everything the window shows.
@@ -299,6 +301,7 @@ type windowState struct {
 	binding   bool   // a bind is in flight
 	log       string // the end of node.log, for the log box
 	port      int    // the node's status port
+	onPath    bool   // the program folder is on the user's PATH
 }
 
 type windowIcons struct{ status, small, big uintptr }
@@ -409,7 +412,7 @@ func (w *window) s(v int) int { return v * w.dpi / 96 }
 
 // clientWidth and clientHeight are the window's inner size without the
 // binding section, which adds bindHeight and moves what is below it down.
-const clientWidth, clientHeight, bindHeight = 880, 342, 58
+const clientWidth, clientHeight, bindHeight = 880, 368, 58
 
 func (w *window) create(icons map[iconState][]byte) error {
 	w.inst, _, _ = procGetModuleHandleW.Call(0)
@@ -537,13 +540,14 @@ var controls = func() []control {
 		{id: idSection, class: "STATIC", text: "Preferences", style: ssNoPrefix, x: 20, y: 158, w: 400, h: 20, font: fontBold},
 		{id: idAutostart, class: "BUTTON", text: "Start JikuNode when I sign in to Windows", style: bsCheckBox | wsTabStop, x: 20, y: 184, w: 400, h: 24},
 		{id: idConnect, class: "BUTTON", text: "Connect to the hub automatically when JikuNode starts", style: bsCheckBox | wsTabStop, x: 20, y: 210, w: 400, h: 24},
-		{id: idPortLabel, class: "STATIC", text: "Status port", style: ssNoPrefix, x: 20, y: 248, w: 90, h: 20},
-		{id: idPort, class: "EDIT", style: edit | esNumber, exStyle: wsExClientEdge, x: 112, y: 243, w: 80, h: 26},
-		{id: idApplyPort, class: "BUTTON", text: "Apply", style: bsPushButton | wsTabStop, x: 200, y: 242, w: 72, h: 28},
-		{id: idSep2, class: "STATIC", style: ssEtchedHorz, x: 20, y: 284, w: 400, h: 2},
-		{id: idPage, class: "BUTTON", text: "Open status page", style: bsPushButton | wsTabStop, x: 20, y: 298, w: 140, h: 30},
-		{id: idLogs, class: "BUTTON", text: "Open log folder", style: bsPushButton | wsTabStop, x: 168, y: 298, w: 130, h: 30},
-		{id: idClose, class: "BUTTON", text: "Close", style: bsPushButton | wsTabStop, x: 340, y: 298, w: 80, h: 30},
+		{id: idPath, class: "BUTTON", text: "Add jikunode to PATH (use it in a terminal)", style: bsCheckBox | wsTabStop, x: 20, y: 236, w: 400, h: 24},
+		{id: idPortLabel, class: "STATIC", text: "Status port", style: ssNoPrefix, x: 20, y: 274, w: 90, h: 20},
+		{id: idPort, class: "EDIT", style: edit | esNumber, exStyle: wsExClientEdge, x: 112, y: 269, w: 80, h: 26},
+		{id: idApplyPort, class: "BUTTON", text: "Apply", style: bsPushButton | wsTabStop, x: 200, y: 268, w: 72, h: 28},
+		{id: idSep2, class: "STATIC", style: ssEtchedHorz, x: 20, y: 310, w: 400, h: 2},
+		{id: idPage, class: "BUTTON", text: "Open status page", style: bsPushButton | wsTabStop, x: 20, y: 324, w: 140, h: 30},
+		{id: idLogs, class: "BUTTON", text: "Open log folder", style: bsPushButton | wsTabStop, x: 168, y: 324, w: 130, h: 30},
+		{id: idClose, class: "BUTTON", text: "Close", style: bsPushButton | wsTabStop, x: 340, y: 324, w: 80, h: 30},
 		// The log box fills the right-hand column.
 		{id: idLogLabel, class: "STATIC", text: "Node log", style: ssNoPrefix, x: 450, y: 16, w: 410, h: 20, font: fontBold},
 		{id: idLog, class: "EDIT", style: wsTabStop | wsVScroll | esMultiline | esReadOnly | esAutoVScroll, exStyle: wsExClientEdge,
@@ -676,13 +680,16 @@ func (w *window) command(id int) {
 		} else {
 			go a.pause()
 		}
-	case idAutostart, idConnect:
+	case idAutostart, idConnect, idPath:
 		on := !w.checked(id)
 		w.setCheck(id, on) // at once; the next update confirms it
-		if id == idAutostart {
+		switch id {
+		case idAutostart:
 			go a.setAutostart(on)
-		} else {
+		case idConnect:
 			go a.setConnect(on)
+		case idPath:
+			go a.setPath(on)
 		}
 	case idApplyPort:
 		w.applyPort()
@@ -783,6 +790,7 @@ func (w *window) apply() {
 	w.enable(idPause, (s.view.canPause || s.view.canResume) && !s.busy)
 	w.setCheck(idAutostart, s.autostart)
 	w.setCheck(idConnect, s.connect)
+	w.setCheck(idPath, s.onPath)
 	if first || s.port != w.shown.port {
 		w.setText(idPort, strconv.Itoa(s.port))
 	}

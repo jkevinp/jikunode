@@ -148,41 +148,122 @@ func RemoveAutostart() (bool, error) {
 	return err == nil, err
 }
 
-// RemoveFromUserPath drops dir from the per-user PATH the installer extended
-// and tells running programs the environment changed.
-func RemoveFromUserPath(dir string) error {
-	k, err := registry.OpenKey(registry.CURRENT_USER, "Environment", registry.QUERY_VALUE|registry.SET_VALUE)
-	if err != nil {
-		return nil
+// ---- per-user PATH ------------------------------------------------------------
+
+// samePathEntry reports whether a PATH entry names dir. Entries may hold
+// %VARIABLES% (the user PATH is usually REG_EXPAND_SZ) and a trailing slash.
+func samePathEntry(entry, dir string) bool {
+	entry = strings.TrimSpace(entry)
+	if entry == "" {
+		return false
 	}
-	defer k.Close()
-	value, kind, err := k.GetStringValue("Path")
-	if err != nil {
-		return nil
+	if expanded, err := registry.ExpandString(entry); err == nil {
+		entry = expanded
 	}
+	return strings.EqualFold(filepath.Clean(entry), filepath.Clean(dir))
+}
+
+// pathWith returns the PATH value with dir appended, unless it is there.
+func pathWith(value, dir string) string {
+	if pathHas(value, dir) {
+		return value
+	}
+	value = strings.TrimRight(value, ";")
+	if value == "" {
+		return dir
+	}
+	return value + ";" + dir
+}
+
+// pathWithout returns the PATH value with every entry for dir removed.
+func pathWithout(value, dir string) string {
 	var keep []string
 	for _, entry := range strings.Split(value, ";") {
-		if entry != "" && !strings.EqualFold(filepath.Clean(entry), filepath.Clean(dir)) {
+		if entry != "" && !samePathEntry(entry, dir) {
 			keep = append(keep, entry)
 		}
 	}
-	joined := strings.Join(keep, ";")
-	if joined == value {
-		return nil
+	return strings.Join(keep, ";")
+}
+
+func pathHas(value, dir string) bool {
+	for _, entry := range strings.Split(value, ";") {
+		if samePathEntry(entry, dir) {
+			return true
+		}
 	}
-	if kind == registry.EXPAND_SZ {
-		err = k.SetExpandStringValue("Path", joined)
+	return false
+}
+
+// userPath reads the per-user PATH (HKCU\Environment\Path) and its type.
+func userPath() (string, uint32, error) {
+	k, err := registry.OpenKey(registry.CURRENT_USER, "Environment", registry.QUERY_VALUE)
+	if err != nil {
+		return "", registry.EXPAND_SZ, err
+	}
+	defer k.Close()
+	value, kind, err := k.GetStringValue("Path")
+	if errors.Is(err, registry.ErrNotExist) {
+		return "", registry.EXPAND_SZ, nil
+	}
+	return value, kind, err
+}
+
+// setUserPath writes the per-user PATH, keeping its type, and tells running
+// programs (Explorer, so new terminals) that the environment changed.
+func setUserPath(value string, kind uint32) error {
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, "Environment", registry.SET_VALUE)
+	if err != nil {
+		return fmt.Errorf("open environment key: %w", err)
+	}
+	defer k.Close()
+	if kind == registry.SZ {
+		err = k.SetStringValue("Path", value)
 	} else {
-		err = k.SetStringValue("Path", joined)
+		err = k.SetExpandStringValue("Path", value)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("set PATH: %w", err)
 	}
 	env := windows.StringToUTF16Ptr("Environment")
 	const hwndBroadcast, wmSettingChange, smtoAbortIfHung = 0xffff, 0x001A, 0x0002
 	_, _, _ = procSendMessageTimeout.Call(hwndBroadcast, wmSettingChange, 0,
 		uintptr(unsafe.Pointer(env)), smtoAbortIfHung, 2000, 0)
 	return nil
+}
+
+// InUserPath reports whether dir is on the per-user PATH.
+func InUserPath(dir string) bool {
+	value, _, err := userPath()
+	return err == nil && pathHas(value, dir)
+}
+
+// AddToUserPath appends dir to the per-user PATH so new terminals find the
+// programs in it. No administrator rights are needed.
+func AddToUserPath(dir string) error {
+	value, kind, err := userPath()
+	if err != nil && !errors.Is(err, registry.ErrNotExist) {
+		return fmt.Errorf("read PATH: %w", err)
+	}
+	next := pathWith(value, dir)
+	if next == value {
+		return nil
+	}
+	return setUserPath(next, kind)
+}
+
+// RemoveFromUserPath drops dir from the per-user PATH the installer (or the
+// app's PATH checkbox) extended and tells running programs.
+func RemoveFromUserPath(dir string) error {
+	value, kind, err := userPath()
+	if err != nil {
+		return nil // no user PATH: nothing to remove
+	}
+	next := pathWithout(value, dir)
+	if next == value {
+		return nil
+	}
+	return setUserPath(next, kind)
 }
 
 var procSendMessageTimeout = windows.NewLazySystemDLL("user32.dll").NewProc("SendMessageTimeoutW")

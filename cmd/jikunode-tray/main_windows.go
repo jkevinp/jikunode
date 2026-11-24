@@ -196,7 +196,7 @@ func setup(port int, background bool) (*app, error) {
 type menu struct {
 	title, detail                   *systray.MenuItem
 	toggle, pause, resume           *systray.MenuItem
-	autostart, connect              *systray.MenuItem
+	autostart, connect, path        *systray.MenuItem
 	open, page, logs, restart, quit *systray.MenuItem
 }
 
@@ -229,6 +229,7 @@ func (a *app) onReady() {
 	systray.AddSeparator()
 	m.autostart = systray.AddMenuItemCheckbox("Start at sign-in", "Start JikuNode when you sign in to Windows", winapp.AutostartEnabled())
 	m.connect = systray.AddMenuItemCheckbox("Connect when JikuNode starts", "Start the node and connect to the hub as soon as JikuNode starts", a.connectOnStart())
+	m.path = systray.AddMenuItemCheckbox("Add jikunode to PATH", "Make the jikunode command work in new terminals", winapp.InUserPath(a.programDir()))
 	systray.AddSeparator()
 	m.quit = systray.AddMenuItem("Quit JikuNode", "Stop the node and close JikuNode")
 
@@ -246,6 +247,7 @@ func (a *app) onReady() {
 		setConnect:   a.setConnect,
 		bind:         a.bind,
 		setPort:      a.setPort,
+		setPath:      a.setPath,
 	}, icons, a.logger)
 	if err != nil {
 		a.logger.Printf("window: %v (the menu still works)", err)
@@ -301,6 +303,8 @@ func (a *app) onReady() {
 				a.setAutostart(!m.autostart.Checked())
 			case <-m.connect.ClickedCh:
 				a.setConnect(!m.connect.Checked())
+			case <-m.path.ClickedCh:
+				a.setPath(!m.path.Checked())
 			case <-m.quit.ClickedCh:
 				systray.Quit()
 				return
@@ -332,6 +336,7 @@ func (a *app) refresh(m *menu, icons map[iconState][]byte) {
 	}
 	busy := a.busy.Load()
 	autostart := winapp.AutostartEnabled()
+	onPath := winapp.InUserPath(a.programDir())
 	connect := a.connectOnStart()
 	notice, noticeErr := a.currentNotice()
 
@@ -365,11 +370,12 @@ func (a *app) refresh(m *menu, icons map[iconState][]byte) {
 		setEnabled(m.pause, v.canPause && !busy)
 	}
 	setChecked(m.autostart, autostart)
+	setChecked(m.path, onPath)
 	setChecked(m.connect, connect)
 
 	bound := nodeagent.IsBound(a.configDir) || (st != nil && err == nil && st.Bound)
 	ws := windowState{view: v, wanted: wanted, busy: busy, notice: notice, noticeErr: noticeErr, autostart: autostart, connect: connect,
-		bound: bound, binding: a.binding.Load(), log: logText, port: a.currentPort()}
+		bound: bound, binding: a.binding.Load(), log: logText, port: a.currentPort(), onPath: onPath}
 	if st != nil && err == nil {
 		ws.nodeID, ws.version = st.NodeID, st.Version
 	}
@@ -476,6 +482,34 @@ func (a *app) setAutostart(on bool) {
 		a.logger.Printf("enable autostart: %v", err)
 		a.setError("Could not turn on start at sign-in: " + err.Error())
 	}
+}
+
+// programDir is the folder holding jikunode.exe and this app: the folder the
+// PATH checkbox adds.
+func (a *app) programDir() string { return filepath.Dir(a.sup.nodePath) }
+
+// setPath adds the program folder to the per-user PATH, or removes it, so
+// `jikunode` works in terminals opened afterwards.
+func (a *app) setPath(on bool) {
+	defer a.refreshSoon()
+	dir := a.programDir()
+	if !on {
+		if err := winapp.RemoveFromUserPath(dir); err != nil {
+			a.logger.Printf("remove from PATH: %v", err)
+			a.setError("Could not remove from PATH: " + err.Error())
+			return
+		}
+		a.logger.Printf("removed %s from PATH", dir)
+		a.setNotice("Removed from PATH for new terminals.")
+		return
+	}
+	if err := winapp.AddToUserPath(dir); err != nil {
+		a.logger.Printf("add to PATH: %v", err)
+		a.setError("Could not add to PATH: " + err.Error())
+		return
+	}
+	a.logger.Printf("added %s to PATH", dir)
+	a.setNotice("Added to PATH. Use jikunode in a new terminal.")
 }
 
 func (a *app) setConnect(on bool) {
